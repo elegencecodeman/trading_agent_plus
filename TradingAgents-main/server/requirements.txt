@@ -1,0 +1,10 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+yfinance>=1.4.1
+stockstats>=0.6.5
+requests>=2.31.0
+# <3.0: the base env's gradio/streamlit both require pandas<3
+pandas>=2.2.0,<3.0
+# tradingagents.graph.checkpointer imports langgraph.checkpoint.sqlite (separate package)
+langgraph-checkpoint-sqlite>=2.0.0
