@@ -1,0 +1,106 @@
+# ============================================================
+# 根级 .gitignore —— 适用于本仓库的全部子项目
+# 与 control-center/.gitignore、TradingAgents-main/.gitignore 互补
+# 注意：已纳入版本控制的文件不受 .gitignore 影响
+# ============================================================
+
+# ---------- 依赖目录 ----------
+node_modules/
+.pnpm-store/
+venv/
+.venv/
+env/
+ENV/
+__pypackages__/
+
+# ---------- 构建产物 ----------
+dist/
+dist-ssr/
+build/
+out/
+*.egg-info/
+*.egg
+*.tsbuildinfo
+.vite/
+.turbo/
+.next/
+.webpack/
+
+# ---------- 测试与覆盖率 ----------
+coverage/
+htmlcov/
+.pytest_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+nosetests.xml
+
+# ---------- Python 缓存 ----------
+__pycache__/
+*.py[cod]
+*$py.class
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+.pyre/
+
+# ---------- 环境变量与密钥 ----------
+# 真实密钥一律不入库，仅保留 .example 模板
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.enterprise.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.toml
+.streamlit/secrets.toml
+.pypirc
+
+# ---------- 运行时产物 ----------
+# 行情缓存、运行日志、Agent 记忆、分析报告
+**/data_cache/
+data/cache/
+data/logs/
+data/memory/
+reports/
+logs/
+*.log
+*.sqlite3
+*.sqlite3-journal
+*.rdb
+*.aof
+*.pid
+
+# ---------- 操作系统 ----------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ---------- 编辑器 / IDE ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.bak
+.history/
+
+# ---------- 包管理器日志 ----------
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
