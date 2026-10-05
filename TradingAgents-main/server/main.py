@@ -120,7 +120,10 @@ def dashboard(ticker: str, range: str = "3M") -> dict[str, Any]:
     """Full real-market dashboard (price-anchored paper portfolio), no LLM.
 
     Used by the frontend as the idle baseline so the UI shows real yfinance data
-    immediately — the agent run then overwrites it with its actual rating.
+    immediately. This is deliberately built with ``rating=None``: no agent has
+    run yet, so the payload is flagged ``rated: false`` and the UI renders an
+    explicit "not rated" state rather than a placeholder Hold. The agent run
+    later overwrites it with its actual rating.
     """
     asset_type = options.detect_asset_type(ticker)
     period = _RANGE_TO_PERIOD.get(range, "6mo")
@@ -128,8 +131,8 @@ def dashboard(ticker: str, range: str = "3M") -> dict[str, Any]:
         from server import market  # local import: pandas+yfinance are heavy
         return market.build_dashboard(
             ticker,
-            "Hold",
-            "Awaiting agent analysis — run the agent to generate a rating.",
+            None,  # unrated — the agent has not analysed this ticker yet
+            "",
             asset_type,
             period=period,
         )

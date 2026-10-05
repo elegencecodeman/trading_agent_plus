@@ -546,6 +546,8 @@ export function getDashboard(marketId: MarketId, range: TimeRangeId): DashboardD
   const agent = getAgentStatus('Analyzing', market)
 
   return {
+    // Legacy mock: stands in for an already-analysed market, so it is "rated".
+    rated: true,
     metrics: generateMetrics(market, range, perf, rng),
     performance: perf,
     agent: { state: agent.state, task: agent.task, market: market.label, timeframe: range, lastDecisionAt: agent.lastDecisionAt, confidence: agent.confidence },

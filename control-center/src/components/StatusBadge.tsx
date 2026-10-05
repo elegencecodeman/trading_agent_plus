@@ -1,4 +1,4 @@
-import { ArrowDownRight, ArrowRight, ArrowUpRight, type LucideIcon } from 'lucide-react'
+import { ArrowDownRight, ArrowRight, ArrowUpRight, Minus, type LucideIcon } from 'lucide-react'
 import { cn } from '../lib/cn'
 import type { Side, SignalStatus, RiskLevel, LogStatus } from '../types'
 
@@ -66,6 +66,8 @@ export function sideTone(side: Side): BadgeTone {
 export function SideIcon({ side, className }: { side: Side; className?: string }) {
   if (side === 'BUY') return <ArrowUpRight className={className ?? 'h-3 w-3'} size={12} />
   if (side === 'SELL') return <ArrowDownRight className={className ?? 'h-3 w-3'} size={12} />
+  // UNRATED: no direction yet — a dash reads as "no call" rather than "flat".
+  if (side === 'UNRATED') return <Minus className={className ?? 'h-3 w-3'} size={12} />
   return <ArrowRight className={className ?? 'h-3 w-3'} size={12} />
 }
 

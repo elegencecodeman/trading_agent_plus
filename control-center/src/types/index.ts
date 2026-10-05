@@ -3,7 +3,8 @@
 export type MarketId = 'us' | 'crypto' | 'forex'
 export type TimeRangeId = '1D' | '1W' | '1M' | '3M'
 export type AgentState = 'Analyzing' | 'Waiting' | 'Executing' | 'Paused' | 'Error'
-export type Side = 'BUY' | 'SELL' | 'HOLD'
+/** `UNRATED` = the agent has not produced a rating for this instrument yet. */
+export type Side = 'BUY' | 'SELL' | 'HOLD' | 'UNRATED'
 export type SignalStatus = 'executed' | 'pending' | 'rejected' | 'monitoring'
 export type LogType = 'reasoning' | 'signal' | 'order' | 'risk'
 export type LogStatus = 'success' | 'info' | 'warning' | 'error'
@@ -126,6 +127,8 @@ export interface AgentMonitorData {
 }
 
 export interface DashboardData {
+  /** False until the agent has produced a rating; rating-derived UI must stay blank. */
+  rated: boolean
   metrics: Metric[]
   performance: PerformancePoint[]
   agent: AgentStatus
@@ -143,6 +146,8 @@ export interface DashboardData {
  */
 export interface DashboardResponse {
   available: boolean
+  /** Absent/false when the agent has not run yet — no rating to display. */
+  rated?: boolean
   range?: string
   metrics?: Metric[]
   performance?: PerformancePoint[]

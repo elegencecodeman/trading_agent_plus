@@ -58,7 +58,7 @@ export function LiveSignalsCard({ signals, onViewAll }: LiveSignalsCardProps) {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-sm font-semibold text-ink">{s.symbol}</span>
-                    <StatusBadge tone={sideTone(s.side)} label={s.side} />
+                    <StatusBadge tone={sideTone(s.side)} label={t(`side.${s.side}`)} />
                   </div>
                   <p className="mt-0.5 truncate text-[11px] text-ink-muted">
                     {s.strategy} · {s.time}
@@ -69,7 +69,9 @@ export function LiveSignalsCard({ signals, onViewAll }: LiveSignalsCardProps) {
               <div className="shrink-0 text-right">
                 <p className="font-mono text-sm font-semibold text-ink tabular">{formatPrice(s.price)}</p>
                 <div className="mt-0.5 flex items-center justify-end gap-1.5">
-                  <span className="text-[11px] text-ink-muted tabular">{Math.round(s.confidence * 100)}%</span>
+                  <span className="text-[11px] text-ink-muted tabular">
+                    {s.side === 'UNRATED' ? '—' : `${Math.round(s.confidence * 100)}%`}
+                  </span>
                   <StatusBadge tone={signalStatusTone(s.status)} label={t(`signalStatus.${s.status}`)} />
                 </div>
               </div>

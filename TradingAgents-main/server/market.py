@@ -73,6 +73,11 @@ PAPER_BASE_NOTIONAL = 250_000.0  # demo paper book size, USD
 # yfinance period → frontend range label (keeps the response's ``range`` honest).
 _PERIOD_TO_RANGE = {"1d": "1D", "5d": "1W", "1mo": "1M", "3mo": "3M", "6mo": "6M"}
 
+# yfinance period → bar interval. "1d"/"5d" must use intraday bars: Yahoo has no
+# settled daily candle for the current session, so a daily request for these
+# periods can return empty and yfinance misreports "possibly delisted".
+_PERIOD_TO_INTERVAL = {"1d": "5m", "5d": "1h", "1mo": "1d", "3mo": "1d", "6mo": "1d"}
+
 
 def _seeded(ticker: str, salt: int = 0) -> float:
     """Deterministic [0,1) per ticker so paper values are stable across runs."""
@@ -92,10 +97,11 @@ def _flatten_cols(df: pd.DataFrame) -> pd.DataFrame:
 
 def _retry_history(ticker: str, period: str = "6mo", tries: int = 3) -> pd.DataFrame:
     """Fetch OHLCV with rate-limit backoff (same policy as the dataflows layer)."""
+    interval = _PERIOD_TO_INTERVAL.get(period, "1d")
     last_err: Exception | None = None
     for attempt in range(tries):
         try:
-            df = yf.Ticker(ticker).history(period=period, auto_adjust=True)
+            df = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=True)
             if df.empty:
                 raise ValueError(f"no rows for {ticker}")
             df = _flatten_cols(df)
@@ -292,8 +298,15 @@ class MarketBridge:
             "maxDrawdown": round(_max_drawdown(df), 2),
         }
 
-    def dashboard(self, rating: str, decision_text: str, period: str = "6mo") -> dict[str, Any]:
+    def dashboard(
+        self, rating: str | None = None, decision_text: str = "", period: str = "6mo"
+    ) -> dict[str, Any]:
         """Full frontend dashboard payload: metrics / curve / positions / risk / signals.
+
+        ``rating=None`` marks the payload as *unrated* (``rated: false``). Real
+        market numbers (price / curve / indicators / vol / drawdown) are still
+        returned, but every rating-derived field is blanked so the UI never
+        presents a Hold the Portfolio Manager did not produce.
 
         ``period`` drives every history fetch (ticker / peers / benchmark) so the
         range selector maps cleanly onto yfinance periods (``1d``→intraday,
@@ -306,7 +319,11 @@ class MarketBridge:
             closes = {t: _retry_history(t, period=period)["Close"] for t in tickers}
             bench = _retry_history(_BENCHMARK.get(self.asset_type, "^GSPC"), period=period)["Close"]
 
-            confidence = RATING_CONFIDENCE.get(rating, 0.55)
+            rated = rating is not None
+            # Unrated runs still need a numeric anchor for the demo paper book —
+            # use a neutral 0.5 (alpha == 0, flat curve) but never surface it as a
+            # rating: the payload reports rated=false and blanks the AI fields.
+            confidence = RATING_CONFIDENCE.get(rating, 0.55) if rated else 0.5
 
             # --- portfolio source: Alpaca paper account when available --------
             # US equities + crypto read their real paper positions / equity / P&L
@@ -378,12 +395,12 @@ class MarketBridge:
                 {
                     "id": "agent-confidence",
                     "label": "Agent Confidence",
-                    "value": f"{round(confidence * 100)}%",
-                    "rawValue": round(confidence * 100),
-                    "delta": rating,
+                    "value": f"{round(confidence * 100)}%" if rated else "—",
+                    "rawValue": round(confidence * 100) if rated else 0,
+                    "delta": rating if rated else "Not rated",
                     "deltaDirection": "flat",
-                    "deltaLabel": "final rating",
-                    "trend": [0.4, 0.46, 0.5, 0.55, 0.6, confidence][-10:],
+                    "deltaLabel": "final rating" if rated else "not rated",
+                    "trend": [0.4, 0.46, 0.5, 0.55, 0.6, confidence][-10:] if rated else [],
                     "kind": "ai",
                 },
                 {
@@ -400,7 +417,7 @@ class MarketBridge:
             ]
 
             # --- signals (main rating + peer monitoring) -----------------------
-            signals = self._signals(tickers, closes, rating, confidence, decision_text)
+            signals = self._signals(tickers, closes, rating, confidence, decision_text, rated)
 
             # --- drawer evidence: structured indicators ------------------------
             ind = _stockstats_indicators(hist)
@@ -414,6 +431,7 @@ class MarketBridge:
 
             return {
                 "available": True,
+                "rated": rated,
                 "range": _PERIOD_TO_RANGE.get(period, "6M"),
                 "metrics": metrics,
                 "performance": perf["points"],
@@ -529,16 +547,28 @@ class MarketBridge:
     def _stop_loss_triggers(confidence: float) -> int:
         return 0 if confidence >= 0.7 else (1 if confidence >= 0.5 else 2)
 
-    def _signals(self, tickers, closes, rating: str, confidence: float, decision_text: str) -> list[dict]:
+    def _signals(
+        self,
+        tickers,
+        closes,
+        rating: str | None,
+        confidence: float,
+        decision_text: str,
+        rated: bool,
+    ) -> list[dict]:
         main = {
             "id": "sig-main",
             "symbol": self.ticker,
-            "side": "BUY" if rating in ("Buy", "Overweight") else "SELL" if rating in ("Sell", "Underweight") else "HOLD",
+            "side": (
+                "UNRATED"
+                if not rated
+                else "BUY" if rating in ("Buy", "Overweight") else "SELL" if rating in ("Sell", "Underweight") else "HOLD"
+            ),
             "price": round(float(closes[self.ticker].iloc[-1]), 2),
-            "confidence": round(confidence, 2),
+            "confidence": round(confidence, 2) if rated else 0,
             "strategy": "multi-agent research",
             "time": datetime.now(timezone.utc).astimezone().strftime("%H:%M"),
-            "status": "executed" if rating in ("Buy", "Sell") else "monitoring",
+            "status": "executed" if rated and rating in ("Buy", "Sell") else "monitoring",
             "note": decision_text,
         }
         peers = []
@@ -566,12 +596,17 @@ class MarketBridge:
 
 def build_dashboard(
     ticker: str,
-    rating: str,
+    rating: str | None,
     decision_text: str,
     asset_type: str = "stock",
     period: str = "6mo",
 ) -> dict[str, Any]:
-    """Thin entry used by the FastAPI bridge (lazy import keeps server boot fast)."""
+    """Thin entry used by the FastAPI bridge (lazy import keeps server boot fast).
+
+    Pass ``rating=None`` for the idle/baseline payload: real market numbers are
+    still returned, but the result is flagged ``rated: false`` so the UI can show
+    an explicit "not rated" state instead of implying a Hold the agent never made.
+    """
     return MarketBridge(ticker, asset_type).dashboard(rating, decision_text, period=period)
 
 

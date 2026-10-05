@@ -6,6 +6,8 @@ import type { AgentState, AgentStatus } from '../types'
 interface AgentStatusCardProps {
   agent: AgentStatus
   running: boolean
+  /** False until the agent has produced a rating — confidence must stay blank. */
+  rated: boolean
   onViewReasoning: () => void
   onOpenMonitor: () => void
 }
@@ -24,7 +26,7 @@ const MARKET_KEY: Record<string, string> = {
   Forex: 'market.forex',
 }
 
-export function AgentStatusCard({ agent, running, onViewReasoning, onOpenMonitor }: AgentStatusCardProps) {
+export function AgentStatusCard({ agent, running, rated, onViewReasoning, onOpenMonitor }: AgentStatusCardProps) {
   const { t } = useI18n()
   const meta = STATE_META[agent.state]
   const isPaused = agent.state === 'Paused'
@@ -65,13 +67,19 @@ export function AgentStatusCard({ agent, running, onViewReasoning, onOpenMonitor
         <div>
           <dt className="text-[11px] text-ink-muted">{t('agent.confidence')}</dt>
           <dd className="mt-0.5 flex items-center gap-2">
-            <span className={cn('text-xs font-semibold tabular', meta.text)}>{agent.confidence}%</span>
-            <span className="h-1.5 w-16 overflow-hidden rounded-full bg-white/5">
-              <span
-                className="block h-full rounded-full transition-[width] duration-300 ease-ui"
-                style={{ width: `${agent.confidence}%`, background: meta.color }}
-              />
-            </span>
+            {rated ? (
+              <>
+                <span className={cn('text-xs font-semibold tabular', meta.text)}>{agent.confidence}%</span>
+                <span className="h-1.5 w-16 overflow-hidden rounded-full bg-white/5">
+                  <span
+                    className="block h-full rounded-full transition-[width] duration-300 ease-ui"
+                    style={{ width: `${agent.confidence}%`, background: meta.color }}
+                  />
+                </span>
+              </>
+            ) : (
+              <span className="text-xs font-semibold text-ink-muted">{t('agent.notRated')}</span>
+            )}
           </dd>
         </div>
       </dl>

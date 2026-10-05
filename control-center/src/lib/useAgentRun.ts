@@ -143,11 +143,17 @@ function applyMeta(d: DashboardData, m: SSEMeta): DashboardData {
 }
 
 function applyDashboard(d: DashboardData, dash: DashboardResponse): DashboardData {
+  // `rated` is false for the idle /dashboard baseline: real prices but no agent
+  // rating yet, so rating-derived UI stays blank instead of showing a fake Hold.
+  const rated = dash.rated ?? true
   const confidence = dash.metrics?.find((m) => m.id === 'agent-confidence')?.rawValue ?? d.agent.confidence
   const indicators = dash.indicators ?? d.monitor.indicators
-  const candidates = (dash.signals ?? d.monitor.candidates).filter((s) => s.side !== 'HOLD').slice(0, 3)
+  const candidates = (dash.signals ?? d.monitor.candidates)
+    .filter((s) => s.side !== 'HOLD' && s.side !== 'UNRATED')
+    .slice(0, 3)
   return {
     ...d,
+    rated,
     metrics: dash.metrics ?? d.metrics,
     performance: dash.performance ?? d.performance,
     positions: dash.positions ?? d.positions,
@@ -170,6 +176,7 @@ const IDLE_STAGES: PipelineStage[] = [
 function idleDashboard(ticker: string, range: TimeRangeId, t: TFunc): DashboardData {
   const market = detectAssetType(ticker) === 'crypto' ? 'Crypto' : 'US Equities'
   return {
+    rated: false,
     metrics: [],
     performance: [],
     agent: {

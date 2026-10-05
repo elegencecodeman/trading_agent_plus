@@ -26,6 +26,7 @@ function localizeDeltaLabel(label: string | undefined, isMeter: boolean, t: TFun
   }
   if (label === 'vs yesterday') return t('metric.vsYesterday')
   if (label === 'session') return t('metric.session')
+  if (label === 'not rated') return t('metric.notRated')
   if (label.startsWith('vs ')) return t('metric.vsRange', { range: label.slice(3) })
   return label
 }
@@ -91,7 +92,7 @@ export function MetricCard({ metric }: MetricCardProps) {
           )}
         </div>
 
-        {isGauge && <Gauge value={metric.rawValue} color={color} />}
+        {isGauge && <Gauge value={metric.rawValue} color={color} unrated={metric.rawValue <= 0} />}
       </div>
 
       <div className="mt-4">
@@ -167,16 +168,20 @@ function Sparkline({ data, color }: { data: number[]; color: string }) {
   )
 }
 
-function Gauge({ value, color }: { value: number; color: string }) {
+function Gauge({ value, color, unrated = false }: { value: number; color: string; unrated?: boolean }) {
   const { t } = useI18n()
   // 180° semi-circular gauge
   const radius = 26
   const circumference = Math.PI * radius
-  const pct = Math.min(100, Math.max(0, value))
+  const pct = unrated ? 0 : Math.min(100, Math.max(0, value))
   const filled = (pct / 100) * circumference
 
   return (
-    <div className="relative shrink-0" role="img" aria-label={t('metric.confidenceAria', { value })}>
+    <div
+      className="relative shrink-0"
+      role="img"
+      aria-label={unrated ? t('metric.notRated') : t('metric.confidenceAria', { value })}
+    >
       <svg viewBox="0 0 64 36" className="h-9 w-16">
         <path
           d="M 6 32 A 26 26 0 0 1 58 32"
@@ -195,7 +200,7 @@ function Gauge({ value, color }: { value: number; color: string }) {
         />
       </svg>
       <span className="absolute inset-x-0 -bottom-1 text-center text-[10px] font-semibold text-ink-secondary tabular">
-        {Math.round(value)}
+        {unrated ? '—' : Math.round(value)}
       </span>
     </div>
   )

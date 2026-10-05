@@ -244,6 +244,7 @@ export function Overview() {
                 <AgentStatusCard
                   agent={agent}
                   running={running}
+                  rated={data.rated}
                   onViewReasoning={() => setDrawerOpen(true)}
                   onOpenMonitor={() => setDrawerOpen(true)}
                 />
