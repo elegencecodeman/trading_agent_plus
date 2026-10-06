@@ -12,12 +12,16 @@ pip install -r server/requirements.txt          # fastapi / uvicorn / pydantic
 python -m uvicorn server.main:app --reload --port 8000
 ```
 
-前端通过浏览器 `EventSource` 消费（无需 SDK）：
+前端通过浏览器 `EventSource` 消费（无需 SDK）。`/run` 需要登录 token（见下方
+「账号与分析历史」），行情类端点 `/options`、`/quote`、`/dashboard` 游客即可访问：
 
 ```js
 const res = await fetch('http://localhost:8000/run', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${localStorage.getItem('trading-agent-auth-token')}`,
+  },
   body: JSON.stringify({ ticker: 'NVDA', trade_date: '2024-05-10', asset_type: 'stock' }),
 })
 const { run_id, events_url } = await res.json()
@@ -33,11 +37,17 @@ es.addEventListener('done',     () => es.close())
 
 ## 端点
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/health` | 存活探针 |
-| POST | `/run` | 启动一次分析，入参 `{ticker, trade_date, asset_type}`，返回 `{run_id, events_url}` |
-| GET | `/run/{run_id}/events` | SSE 流（`text/event-stream`） |
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| GET | `/health` | — | 存活探针 |
+| POST | `/run` | token | 启动一次分析，入参 `{ticker, trade_date, asset_type}`，返回 `{run_id, events_url}` |
+| GET | `/run/{run_id}/events` | — | SSE 流（`text/event-stream`） |
+| POST | `/auth/register` | — | 注册，入参 `{username, password, display_name?}`，返回 `{access_token, token_type, expires_in, user}` |
+| POST | `/auth/login` | — | 登录，入参 `{username, password}`，返回同上 |
+| GET | `/auth/me` | token | 校验 token 并返回当前用户 |
+| GET | `/analyses` | token | 自己的历史（`?limit=&ticker=`），按时间倒序，返回 `{total, items}` |
+| GET | `/analyses/latest/{ticker}` | token | 某标的最新一次分析（含 dashboard 快照），无则 `null` |
+| GET | `/analyses/{id}` | token | 单次分析详情；非本人返回 404 |
 
 ## SSE 事件契约（→ 前端组件映射）
 
@@ -125,11 +135,48 @@ yfinance 数据；**持仓权重、组合市值、暴露度、置信度数值**�
   （复用 `agents/schemas.py` 机制）把指标/候选从文本抽成字段。
 - **`stopLossTriggers`**：补丁用置信度推导（0–2），非真实风控系统计数。
 
+## 账号与分析历史
+
+每次 `/run` 跑完，结果都会落库，用户可在前端「Analysis History」页回看。
+代码分布在四个文件：
+
+| 文件 | 职责 |
+|---|---|
+| `server/db.py` | 引擎 / Session / `init_db()`；读 `DATABASE_URL` |
+| `server/models.py` | `User`、`AnalysisRun` 两张表 |
+| `server/auth.py` | bcrypt 口令哈希 + JWT 签发/校验 + `current_user` 依赖 |
+| `server/store.py` | 所有查询（`save_run` / `list_runs` / `get_run` / `latest_run_for` …） |
+
+**默认零配置**：不设 `DATABASE_URL` 就用 `data/agent_console.sqlite3`，
+启动时自动建表。
+
+**换 MySQL** 只改环境变量，业务代码一行不动：
+
+```bash
+pip install PyMySQL cryptography
+# .env
+DATABASE_URL=mysql+pymysql://user:pass@127.0.0.1:3306/tradingagents?charset=utf8mb4
+```
+
+表结构用的是 SQLAlchemy 通用 `JSON` 类型（不是 PG 专属的 JSONB），所以
+SQLite / MySQL / PostgreSQL 都能直接建，dashboard 快照整块存进去。
+
+**鉴权边界**：游客可以看行情（`/options`、`/quote`、`/dashboard`），
+但 `/run` 与 `/analyses*` 一律要求 `Authorization: Bearer <token>`；
+历史查询按 `user_id` 强制隔离，看别人的记录返回 404 而非 403（不泄露存在性）。
+登录失败时「用户不存在」和「口令错误」返回同一条消息，避免账号枚举。
+
+**必须设置 `JWT_SECRET`**（`.env` 里已生成一个）。不设的话服务会退回一个
+硬编码的开发密钥并打 warning —— 本地能用，生产绝对不行。
+
 ## 局限
 
 - **无 checkpoint 续跑**：流式路径用 `stream_mode="updates"` 直接跑图，
   未接入 `propagate` 里的 `SqliteSaver` 断点续跑；崩溃需重跑。
 - **单例图、固定分析师**：图按默认 `selected_analysts`（market/social/news/
   fundamentals）编译一次，暂不支持按请求换分析师（需按请求重编译图）。
-- **内存态 run 表**：`RUNS` 存在进程内存，重启即失；多 worker 需换成 Redis
-  pub/sub。
+- **内存态 run 表**：`RUNS`（SSE 事件队列的注册表）仍在进程内存，重启即失，
+  正在跑的那一次会断线；多 worker 需换成 Redis pub/sub。
+  *已完成的分析结果不受影响*——它们已经写进数据库了。
+- **无 token 吊销**：JWT 是无状态的，改密码/登出不会让已签发的 token 立即失效，
+  只能等过期或换 `JWT_SECRET`。

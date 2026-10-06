@@ -8,3 +8,12 @@ requests>=2.31.0
 pandas>=2.2.0,<3.0
 # tradingagents.graph.checkpointer imports langgraph.checkpoint.sqlite (separate package)
 langgraph-checkpoint-sqlite>=2.0.0
+# --- accounts + analysis history (server/db.py, server/auth.py) ---
+# SQLAlchemy is dialect-neutral: sqlite:// by default, mysql+pymysql:// when
+# DATABASE_URL points at MySQL (that swap also needs the two lines below).
+SQLAlchemy>=2.0.30
+PyJWT>=2.8.0
+bcrypt>=4.1.0
+# Only required when DATABASE_URL uses mysql+pymysql://
+# PyMySQL>=1.1.0
+# cryptography>=42.0.0   # PyMySQL needs it for MySQL 8's caching_sha2_password

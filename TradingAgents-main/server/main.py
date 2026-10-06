@@ -19,8 +19,10 @@ names and payload shapes are defined in ``runner.py`` and documented in
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
@@ -32,23 +34,51 @@ from dotenv import load_dotenv
 # .env has to be in os.environ first.
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi import Depends, FastAPI, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import StreamingResponse  # noqa: E402
+from sqlalchemy import select  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
 
-from server import options  # noqa: E402
+from server import auth, db, options, store  # noqa: E402
+from server.models import AnalysisRun, User, utcnow  # noqa: E402
 from server.runner import StreamingRunner  # noqa: E402
-from server.schemas import RunRequest, RunResponse  # noqa: E402
+from server.schemas import (  # noqa: E402
+    AnalysisDetail,
+    AnalysisListResponse,
+    AnalysisSummary,
+    LoginRequest,
+    RegisterRequest,
+    RunRequest,
+    RunResponse,
+    TokenResponse,
+    UserOut,
+)
 from tradingagents.dataflows.config import set_config  # noqa: E402
 from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
 from tradingagents.graph.trading_graph import TradingAgentsGraph  # noqa: E402
 
-app = FastAPI(title="TradingAgents API", version="0.1.0")
+logger = logging.getLogger("server.main")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Create tables on boot. A DB failure must not stop the server — market
+    data endpoints keep working without persistence, so we log and carry on."""
+    try:
+        db.init_db()
+        logger.info("persistence ready: %s", db.database_url())
+    except Exception:  # noqa: BLE001 — degrade, never refuse to boot
+        logger.exception("could not initialise the database; persistence disabled")
+    yield
+
+
+app = FastAPI(title="TradingAgents API", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # dev only; tighten in production
-    allow_credentials=False,
+    allow_credentials=False,  # Bearer tokens are sent in a header, not a cookie
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -140,11 +170,191 @@ def dashboard(ticker: str, range: str = "3M") -> dict[str, Any]:
         return {"available": False, "ticker": ticker, "error": f"{type(exc).__name__}: {exc}"}
 
 
+# --------------------------------------------------------------------------- #
+# Auth
+# --------------------------------------------------------------------------- #
+def _user_out(user: User) -> UserOut:
+    return UserOut(
+        id=user.id,
+        username=user.username,
+        display_name=user.display_name,
+        created_at=user.created_at.isoformat(),
+    )
+
+
+@app.post("/auth/register", response_model=TokenResponse, status_code=201)
+def register(req: RegisterRequest, db_session: Session = Depends(db.get_db)) -> TokenResponse:
+    """Create an account and return a token, so the SPA can go straight in."""
+    username = req.username.strip().lower()
+    if store.find_user_by_username(db_session, username) is not None:
+        raise HTTPException(status_code=409, detail="Username already taken")
+
+    user = store.create_user(
+        db_session,
+        username=username,
+        password_hash=auth.hash_password(req.password),
+        display_name=req.display_name,
+    )
+    db_session.commit()
+    db_session.refresh(user)
+
+    token, expires_in = auth.create_access_token(user)
+    return TokenResponse(access_token=token, expires_in=expires_in, user=_user_out(user))
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login(req: LoginRequest, db_session: Session = Depends(db.get_db)) -> TokenResponse:
+    user = store.find_user_by_username(db_session, req.username)
+    # One message for "no such user" and "wrong password": telling them apart
+    # would let anyone enumerate valid usernames.
+    if user is None or not auth.verify_password(req.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Incorrect username or password")
+
+    user.last_login_at = utcnow()
+    db_session.commit()
+    db_session.refresh(user)
+
+    token, expires_in = auth.create_access_token(user)
+    return TokenResponse(access_token=token, expires_in=expires_in, user=_user_out(user))
+
+
+@app.get("/auth/me", response_model=UserOut)
+def me(user: User = Depends(auth.current_user)) -> UserOut:
+    """Who am I — used by the SPA to validate a stored token on page load."""
+    return _user_out(user)
+
+
+# --------------------------------------------------------------------------- #
+# Persisted analyses
+# --------------------------------------------------------------------------- #
+def _summary(row: AnalysisRun) -> AnalysisSummary:
+    return AnalysisSummary(
+        id=row.id,
+        run_id=row.run_id,
+        ticker=row.ticker,
+        trade_date=row.trade_date,
+        asset_type=row.asset_type,
+        rating=row.rating,
+        side=row.side,
+        confidence=row.confidence,
+        status=row.status,
+        range=row.range,
+        created_at=row.created_at.isoformat(),
+    )
+
+
+def _detail(row: AnalysisRun) -> AnalysisDetail:
+    return AnalysisDetail(
+        **_summary(row).model_dump(),
+        strategy=row.strategy,
+        note=row.note,
+        provider=row.provider,
+        deep_think_llm=row.deep_think_llm,
+        quick_think_llm=row.quick_think_llm,
+        output_language=row.output_language,
+        dashboard=row.dashboard,
+    )
+
+
+@app.get("/analyses", response_model=AnalysisListResponse)
+def list_analyses(
+    limit: int = 50,
+    offset: int = 0,
+    ticker: str | None = None,
+    user: User = Depends(auth.current_user),
+    db_session: Session = Depends(db.get_db),
+) -> AnalysisListResponse:
+    """The caller's own run history, newest first."""
+    limit = max(1, min(limit, 200))
+    stmt = select(AnalysisRun).where(AnalysisRun.user_id == user.id)
+    if ticker:
+        stmt = stmt.where(AnalysisRun.ticker == ticker.strip().upper())
+    stmt = stmt.order_by(AnalysisRun.created_at.desc(), AnalysisRun.id.desc()).limit(limit).offset(max(0, offset))
+    rows = list(db_session.execute(stmt).scalars().all())
+    return AnalysisListResponse(total=store.count_runs(db_session, user.id), items=[_summary(r) for r in rows])
+
+
+@app.get("/analyses/latest/{ticker}", response_model=AnalysisDetail | None)
+def latest_analysis(
+    ticker: str,
+    user: User = Depends(auth.current_user),
+    db_session: Session = Depends(db.get_db),
+) -> AnalysisDetail | None:
+    """The user's most recent run for ``ticker``, or ``null``.
+
+    Declared *before* ``/analyses/{run_pk}`` so the literal path segment wins
+    the route match instead of being parsed as an id.
+    """
+    row = store.latest_run_for(db_session, user.id, ticker)
+    return _detail(row) if row else None
+
+
+@app.get("/analyses/{run_pk}", response_model=AnalysisDetail)
+def get_analysis(
+    run_pk: int,
+    user: User = Depends(auth.current_user),
+    db_session: Session = Depends(db.get_db),
+) -> AnalysisDetail:
+    """One stored run. Scoped to its owner — another user's id 404s."""
+    row = store.get_run(db_session, user.id, run_pk)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    return _detail(row)
+
+
+# --------------------------------------------------------------------------- #
+# Runs
+# --------------------------------------------------------------------------- #
+def _persist_run(
+    *,
+    user_id: int,
+    run_id: str,
+    req: RunRequest,
+    decision: dict[str, Any],
+    dash: dict[str, Any] | None,
+) -> None:
+    """Write a finished run to the database, in its own transaction.
+
+    Called from the run thread, so it opens its own session via
+    ``session_scope``. Confidence is not emitted by TradingAgents — it is
+    backfilled from the dashboard's ``agent-confidence`` card, which is the only
+    place the rating→0-1 mapping is materialised.
+    """
+    stored_decision = dict(decision)
+    if isinstance(dash, dict) and dash.get("available"):
+        for metric in dash.get("metrics") or []:
+            if metric.get("id") == "agent-confidence":
+                raw = metric.get("rawValue")
+                if isinstance(raw, (int, float)) and raw > 0:
+                    stored_decision["confidence"] = round(float(raw) / 100, 4)
+                break
+
+    with db.session_scope() as session:
+        store.save_run(
+            session,
+            user_id=user_id,
+            run_id=run_id,
+            ticker=req.ticker,
+            trade_date=req.trade_date,
+            asset_type=req.asset_type,
+            decision=stored_decision,
+            dashboard=dash if isinstance(dash, dict) and dash.get("available") else None,
+            dashboard_range=(dash or {}).get("range") if isinstance(dash, dict) else None,
+            provider=req.provider,
+            deep_think_llm=req.deep_think_llm,
+            quick_think_llm=req.quick_think_llm,
+            output_language=req.output_language,
+        )
+
+
 @app.post("/run", response_model=RunResponse)
-def start_run(req: RunRequest) -> RunResponse:
+def start_run(req: RunRequest, user: User = Depends(auth.current_user)) -> RunResponse:
+    """Start an analysis. **Requires a token** — a run is billed to an account
+    and its result is persisted under that account."""
     run_id = uuid.uuid4().hex[:12]
     q: Queue[tuple[str, dict[str, Any]]] = Queue()
-    RUNS[run_id] = {"queue": q, "status": "running"}
+    RUNS[run_id] = {"queue": q, "status": "running", "user_id": user.id}
+    user_id = user.id
 
     graph, cfg = get_graph(
         llm_provider=req.provider,
@@ -170,6 +380,7 @@ def start_run(req: RunRequest) -> RunResponse:
             # anything queued after it is dropped. The runner deliberately does
             # not emit "done" itself — this function owns the end-of-stream
             # sentinel so trailing events stay reachable.
+            dash: dict[str, Any] | None = None
             try:
                 from server import market  # local import: pandas+yfinance are heavy
                 dash = market.build_dashboard(
@@ -181,6 +392,17 @@ def start_run(req: RunRequest) -> RunResponse:
                 q.put(("dashboard", dash))
             except Exception as exc:  # noqa: BLE001
                 q.put(("dashboard", {"available": False, "error": f"{type(exc).__name__}: {exc}"}))
+
+            # Persist before "done" so a client that closes on the sentinel still
+            # finds the row. A storage failure must never lose the stream or the
+            # decision the user just watched the agent produce.
+            try:
+                _persist_run(
+                    user_id=user_id, run_id=run_id, req=req, decision=decision, dash=dash
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to persist run %s", run_id)
+
             q.put(("done", {}))
         except Exception as exc:  # noqa: BLE001 — surface any pipeline failure to the client
             q.put(("error", {"message": f"{type(exc).__name__}: {exc}"}))
