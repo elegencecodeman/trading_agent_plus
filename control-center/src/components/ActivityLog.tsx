@@ -7,16 +7,6 @@ import type { ActivityEntry, LogStatus, LogType } from '../types'
 import { EmptyState } from './EmptyState'
 import type { BadgeTone } from './StatusBadge'
 
-type Filter = 'all' | LogType
-
-const FILTERS: { key: Filter; labelKey: string }[] = [
-  { key: 'all', labelKey: 'activity.all' },
-  { key: 'reasoning', labelKey: 'logType.reasoning' },
-  { key: 'signal', labelKey: 'logType.signal' },
-  { key: 'order', labelKey: 'logType.order' },
-  { key: 'risk', labelKey: 'logType.risk' },
-]
-
 const TYPE_META: Record<LogType, { labelKey: string; icon: LucideIcon; tone: BadgeTone }> = {
   reasoning: { labelKey: 'logType.reasoning', icon: Brain, tone: 'ai' },
   signal: { labelKey: 'logType.signal', icon: Radio, tone: 'cyan' },
@@ -69,8 +59,6 @@ function syntheticTime(offsetSec: number): string {
 
 export function ActivityLog({ entries, running, symbols = [], streaming = false }: ActivityLogProps) {
   const { t } = useI18n()
-  const [filter, setFilter] = useState<Filter>('all')
-  const [autoScroll, setAutoScroll] = useState(true)
   const [live, setLive] = useState<ActivityEntry[]>([])
   const tickRef = useRef(0)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -102,76 +90,26 @@ export function ActivityLog({ entries, running, symbols = [], streaming = false 
     return () => clearInterval(id)
   }, [running, symbols, streaming, t])
 
-  const filtered = useMemo(() => {
-    const all = [...live, ...entries]
-    return filter === 'all' ? all : all.filter((e) => e.type === filter)
-  }, [live, entries, filter])
+  const filtered = useMemo(() => [...live, ...entries], [live, entries])
 
-  // Auto-scroll to newest on new entries (synthetic or streamed).
+  // Keep the newest entry in view as it arrives (synthetic or streamed).
   useEffect(() => {
-    if (!autoScroll || filtered.length === 0) return
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [filtered, autoScroll])
+  }, [filtered])
 
   return (
     <div className="flex flex-col rounded-xl border border-line bg-surface">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3.5">
-        <div className="flex items-center gap-2">
-          <Terminal className="h-4 w-4 text-ink-muted" size={16} />
-          <h2 className="text-sm font-semibold text-ink">{t('activity.recentActivity')}</h2>
-          {running && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-positive/10 px-2 py-0.5 text-[10px] font-semibold text-positive">
-              <span className="h-1.5 w-1.5 animate-breathe rounded-full bg-positive" />
-              {t('activity.live')}
-            </span>
-          )}
-        </div>
-
-        <div className="flex items-center gap-3">
-          {/* Filter segmented */}
-          <div role="tablist" aria-label={t('activity.logFilter')} className="inline-flex items-center gap-0.5 rounded-lg border border-line bg-surface/60 p-0.5">
-            {FILTERS.map((f) => (
-              <button
-                key={f.key}
-                role="tab"
-                aria-selected={filter === f.key}
-                onClick={() => setFilter(f.key)}
-                className={cn(
-                  'rounded-md px-2 py-1 text-[11px] font-medium transition-colors duration-200',
-                  filter === f.key ? 'bg-accent-faint text-accent' : 'text-ink-secondary hover:text-ink',
-                )}
-              >
-                {t(f.labelKey)}
-              </button>
-            ))}
-          </div>
-
-          {/* Auto-scroll toggle */}
-          <button
-            type="button"
-            role="switch"
-            aria-checked={autoScroll}
-            onClick={() => setAutoScroll((v) => !v)}
-            className="flex items-center gap-2 text-[11px] font-medium text-ink-secondary"
-          >
-            {t('activity.autoScroll')}
-            <span
-              className={cn(
-                'relative h-4 w-7 rounded-full transition-colors duration-200',
-                autoScroll ? 'bg-accent' : 'bg-line',
-              )}
-            >
-              <span
-                className={cn(
-                  'absolute top-0.5 h-3 w-3 rounded-full bg-ink transition-transform duration-200',
-                  autoScroll ? 'translate-x-3.5' : 'translate-x-0.5',
-                )}
-              />
-            </span>
-          </button>
-        </div>
+      <div className="flex items-center gap-2 border-b border-line px-5 py-3.5">
+        <Terminal className="h-4 w-4 text-ink-muted" size={16} />
+        <h2 className="text-sm font-semibold text-ink">{t('activity.recentActivity')}</h2>
+        {running && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-positive/10 px-2 py-0.5 text-[10px] font-semibold text-positive">
+            <span className="h-1.5 w-1.5 animate-breathe rounded-full bg-positive" />
+            {t('activity.live')}
+          </span>
+        )}
       </div>
 
       {/* Log list (terminal style, readable) */}

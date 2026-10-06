@@ -209,3 +209,52 @@ export interface RunConfig {
   quickModel: string
   language: string
 }
+
+/* ------------------------------------------------------------------ *
+ * Auth + persisted analysis history (mirror server/schemas.py)
+ * ------------------------------------------------------------------ */
+
+export interface AuthUser {
+  id: number
+  username: string
+  display_name: string | null
+  created_at: string
+}
+
+export interface TokenResponse {
+  access_token: string
+  token_type: 'bearer'
+  expires_in: number
+  user: AuthUser
+}
+
+/** One row in the history list — no note/dashboard payload. */
+export interface AnalysisSummary {
+  id: number
+  run_id: string
+  ticker: string
+  trade_date: string
+  asset_type: string
+  rating: string
+  side: Side
+  confidence: number | null
+  status: string
+  range: string | null
+  created_at: string
+}
+
+/** A stored run including the decision prose and its dashboard snapshot. */
+export interface AnalysisDetail extends AnalysisSummary {
+  strategy: string
+  note: string
+  provider: string | null
+  deep_think_llm: string | null
+  quick_think_llm: string | null
+  output_language: string | null
+  dashboard: DashboardResponse | null
+}
+
+export interface AnalysisListResponse {
+  total: number
+  items: AnalysisSummary[]
+}

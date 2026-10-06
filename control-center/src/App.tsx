@@ -1,10 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Construction, type LucideIcon } from 'lucide-react'
 import { AppShell } from './components/AppShell'
-import { EmptyState } from './components/EmptyState'
+import { AgentMonitorView } from './components/AgentMonitorView'
+import { ComingSoonView } from './components/ComingSoonView'
+import { HistoryView } from './components/HistoryView'
+import { LoginDialog } from './components/LoginDialog'
 import { Overview } from './components/Overview'
+import { PortfolioView } from './components/PortfolioView'
+import { RiskView } from './components/RiskView'
+import { SignalsView } from './components/SignalsView'
 import { NAV_ITEMS, type NavId } from './components/Sidebar'
 import { useI18n } from './lib/i18n'
+import { RunProvider } from './lib/run'
 
 type Theme = 'dark' | 'light'
 
@@ -22,53 +28,41 @@ export default function App() {
   const activeMeta = useMemo(() => NAV_ITEMS.find((n) => n.id === active), [active])
 
   return (
-    <AppShell
-      active={active}
-      onNavigate={setActive}
-      collapsed={collapsed}
-      onToggleCollapse={() => setCollapsed((v) => !v)}
-      mobileNavOpen={mobileNavOpen}
-      onOpenMobileNav={() => setMobileNavOpen(true)}
-      onCloseMobileNav={() => setMobileNavOpen(false)}
-      theme={theme}
-      onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
-      updatedAt="19 Aug 2026 · 09:31 ET"
-    >
-      {active === 'overview' ? (
-        <Overview />
-      ) : (
-        <PlaceholderView
-          key={active}
-          title={t(activeMeta?.labelKey ?? 'nav.overview')}
-          icon={activeMeta?.icon ?? Construction}
-          onBackToOverview={() => setActive('overview')}
-        />
-      )}
-    </AppShell>
-  )
-}
+    <RunProvider>
+      <AppShell
+        active={active}
+        onNavigate={setActive}
+        collapsed={collapsed}
+        onToggleCollapse={() => setCollapsed((v) => !v)}
+        mobileNavOpen={mobileNavOpen}
+        onOpenMobileNav={() => setMobileNavOpen(true)}
+        onCloseMobileNav={() => setMobileNavOpen(false)}
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+        updatedAt="19 Aug 2026 · 09:31 ET"
+      >
+        {active === 'overview' ? (
+          <Overview onNavigate={setActive} />
+        ) : active === 'history' ? (
+          <HistoryView />
+        ) : active === 'agent' ? (
+          <AgentMonitorView />
+        ) : active === 'signals' ? (
+          <SignalsView />
+        ) : active === 'portfolio' ? (
+          <PortfolioView />
+        ) : active === 'risk' ? (
+          <RiskView />
+        ) : (
+          <ComingSoonView
+            icon={activeMeta?.icon ?? NAV_ITEMS[0].icon}
+            title={t(activeMeta?.labelKey ?? 'nav.overview')}
+          />
+        )}
 
-function PlaceholderView({
-  title,
-  icon,
-  onBackToOverview,
-}: {
-  title: string
-  icon: LucideIcon
-  onBackToOverview: () => void
-}) {
-  const { t } = useI18n()
-  return (
-    <div className="mx-auto w-full max-w-[1600px] px-4 py-6 lg:px-6">
-      <div className="rounded-xl border border-line bg-surface">
-        <EmptyState
-          icon={icon}
-          title={title}
-          description={t('placeholder.description')}
-          actionLabel={t('common.backToOverview')}
-          onAction={onBackToOverview}
-        />
-      </div>
-    </div>
+        {/* Rendered at the shell level so any view can raise it via useAuth(). */}
+        <LoginDialog />
+      </AppShell>
+    </RunProvider>
   )
 }

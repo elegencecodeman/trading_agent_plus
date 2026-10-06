@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Pause, Play, RefreshCw, Square } from 'lucide-react'
 import { cn } from '../lib/cn'
-import { fetchOptions } from '../lib/api'
+import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
-import { DEFAULT_TICKER, useAgentRun } from '../lib/useAgentRun'
-import type { AgentState, AgentStatus, MarketId, OptionsResponse, RunConfig, TimeRangeId } from '../types'
+import { useRun } from '../lib/run'
+import type { NavId } from './Sidebar'
+import type { AgentState, AgentStatus } from '../types'
 import { ActivityLog } from './ActivityLog'
 import { AgentMonitorDrawer } from './AgentMonitorDrawer'
 import { AgentStatusCard } from './AgentStatusCard'
@@ -21,68 +22,26 @@ import { RiskSnapshotCard } from './RiskSnapshotCard'
 import { TickerPicker } from './TickerPicker'
 import { TimeRangeSelector } from './TimeRangeSelector'
 
-const STORAGE_KEY = 'trading-agent-run-config'
-const DEFAULT_CONFIG: RunConfig = {
-  ticker: 'NVDA',
-  provider: 'deepseek',
-  deepModel: 'deepseek-v4-pro',
-  quickModel: 'deepseek-v4-flash',
-  language: 'Chinese',
+interface OverviewProps {
+  onNavigate: (id: NavId) => void
 }
 
-function loadRunConfig(): RunConfig {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return { ...DEFAULT_CONFIG, ...(JSON.parse(raw) as Partial<RunConfig>) }
-  } catch {
-    /* ignore malformed persisted config */
-  }
-  return DEFAULT_CONFIG
-}
-
-export function Overview() {
+export function Overview({ onNavigate }: OverviewProps) {
   const { t } = useI18n()
-  const [market, setMarket] = useState<MarketId>('us')
-  const [range, setRange] = useState<TimeRangeId>('1D')
-  const [config, setConfig] = useState<RunConfig>(loadRunConfig)
-  const [options, setOptions] = useState<OptionsResponse | null>(null)
+  const { user, requireAuth } = useAuth()
   const [drawerOpen, setDrawerOpen] = useState(false)
 
-  const { phase, connected, live, loading, error, warning, data, start, pause, stop, reset } = useAgentRun()
-
-  // Fetch real market data whenever the ticker or range changes.
-  useEffect(() => {
-    reset(config.ticker, range)
-  }, [config.ticker, range, reset])
-
-  // Load provider/model/language catalog once (backend may be down → keep defaults).
-  useEffect(() => {
-    let cancelled = false
-    fetchOptions()
-      .then((o) => {
-        if (!cancelled) setOptions(o)
-      })
-      .catch(() => {
-        /* keep defaults */
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  // Persist run config across reloads.
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(config))
-    } catch {
-      /* ignore quota/security errors */
-    }
-  }, [config])
-
-  const handleMarketChange = (m: MarketId) => {
-    setMarket(m)
-    setConfig((c) => ({ ...c, ticker: DEFAULT_TICKER[m] }))
-  }
+  const {
+    run,
+    config,
+    setConfig,
+    market,
+    setMarket,
+    range,
+    setRange,
+    options,
+  } = useRun()
+  const { phase, connected, live, loading, error, warning, data, start, pause, stop, reset } = run
 
   const running = phase === 'running'
   const showError = error !== null
@@ -102,6 +61,12 @@ export function Overview() {
     reset(config.ticker, range)
   }
 
+  // Guests browse real market data freely; only the LLM run needs an account
+  // (results are persisted per user). requireAuth() opens the dialog for us.
+  const handleRun = () => {
+    if (requireAuth()) start(config)
+  }
+
   return (
     <div className="mx-auto w-full max-w-[1600px] px-4 py-6 lg:px-6">
       {/* Header */}
@@ -115,7 +80,7 @@ export function Overview() {
 
         <div className="flex flex-wrap items-center gap-2">
           <TimeRangeSelector value={range} onChange={setRange} />
-          <MarketSelector value={market} onChange={handleMarketChange} />
+          <MarketSelector value={market} onChange={setMarket} />
 
           <button
             type="button"
@@ -155,7 +120,8 @@ export function Overview() {
           ) : (
             <button
               type="button"
-              onClick={() => start(config)}
+              onClick={handleRun}
+              title={user ? undefined : t('auth.requiresLogin')}
               className="inline-flex items-center gap-2 rounded-lg bg-accent px-3.5 py-2 text-xs font-semibold text-app transition-colors hover:bg-accent/90"
             >
               <Play className="h-3.5 w-3.5" size={14} />
@@ -182,7 +148,7 @@ export function Overview() {
           <TickerPicker
             market={market}
             value={config.ticker}
-            onChange={(ticker) => setConfig((c) => ({ ...c, ticker }))}
+            onChange={(ticker) => setConfig({ ticker })}
           />
         </div>
         <div className="flex flex-col gap-1">
@@ -193,7 +159,7 @@ export function Overview() {
               provider={config.provider}
               deepModel={config.deepModel}
               quickModel={config.quickModel}
-              onChange={(patch) => setConfig((c) => ({ ...c, ...patch }))}
+              onChange={(patch) => setConfig(patch)}
             />
           ) : (
             <span className="py-1.5 text-xs text-ink-muted">{t('config.loadingModels')}</span>
@@ -204,7 +170,7 @@ export function Overview() {
           <LanguageSelector
             languages={options?.languages ?? ['English', 'Chinese']}
             value={config.language}
-            onChange={(language) => setConfig((c) => ({ ...c, language }))}
+            onChange={(language) => setConfig({ language })}
           />
         </div>
       </div>
@@ -246,16 +212,16 @@ export function Overview() {
                   running={running}
                   rated={data.rated}
                   onViewReasoning={() => setDrawerOpen(true)}
-                  onOpenMonitor={() => setDrawerOpen(true)}
+                  onOpenMonitor={() => onNavigate('agent')}
                 />
               </div>
             </section>
 
             {/* Row 3 — signals / positions / risk */}
             <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-              <LiveSignalsCard signals={data.signals} />
-              <PositionsTable positions={data.positions} />
-              <RiskSnapshotCard risk={data.risk} />
+              <LiveSignalsCard signals={data.signals} onViewAll={() => onNavigate('signals')} />
+              <PositionsTable positions={data.positions} onViewPortfolio={() => onNavigate('portfolio')} />
+              <RiskSnapshotCard risk={data.risk} onOpenRisk={() => onNavigate('risk')} />
             </section>
 
             {/* Row 4 — activity log */}

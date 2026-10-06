@@ -1,6 +1,7 @@
 import {
   Activity,
   Briefcase,
+  FileClock,
   History,
   LayoutDashboard,
   PanelLeftClose,
@@ -17,6 +18,7 @@ import { useI18n } from '../lib/i18n'
 
 export type NavId =
   | 'overview'
+  | 'history'
   | 'agent'
   | 'signals'
   | 'portfolio'
@@ -33,6 +35,7 @@ interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { id: 'overview', labelKey: 'nav.overview', icon: LayoutDashboard },
+  { id: 'history', labelKey: 'nav.history', icon: FileClock },
   { id: 'agent', labelKey: 'nav.agent', icon: Activity },
   { id: 'signals', labelKey: 'nav.signals', icon: Radio },
   { id: 'portfolio', labelKey: 'nav.portfolio', icon: Briefcase },

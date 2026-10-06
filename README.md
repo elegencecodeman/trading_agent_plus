@@ -44,6 +44,13 @@ Financial_project/
 ├── TradingAgents-main/       # Python 后端
 │   ├── tradingagents/        #   AI 引擎本体（12 个智能体 + 取数层 + 图编排）
 │   ├── server/               #   FastAPI 适配层（薄封装，不含 AI 逻辑）
+│   │   ├── main.py           #     路由 / SSE 端点
+│   │   ├── auth.py           #     bcrypt 口令 + JWT 签发校验
+│   │   ├── db.py             #     数据库连接（读 DATABASE_URL）
+│   │   ├── models.py         #     User / AnalysisRun 两张表
+│   │   ├── store.py          #     历史记录读写
+│   │   └── market.py         #     yfinance / Alpaca 行情
+│   ├── data/                 #   SQLite 库文件默认落在这里
 │   ├── main.py               #   命令行（CLI）入口
 │   ├── .env.example          #   环境变量模板
 │   └── requirements.txt      #   内容是 "."，即安装本包
@@ -51,6 +58,7 @@ Financial_project/
 └── control-center/           # React 前端
     ├── src/
     │   ├── lib/useAgentRun.ts   # SSE 事件处理核心
+    │   ├── lib/auth.tsx         # 登录态 Context
     │   ├── components/          # 界面组件
     │   └── types/               # 类型定义
     └── package.json
@@ -91,12 +99,16 @@ python -m uvicorn server.main:app --reload --port 8000
 cd Financial_project/control-center
 
 npm install
-c
+npm run dev
 ```
 
 ### 3️⃣ 打开界面
 
-访问 <http://localhost:5173>，输股票代码（如 `NVDA`），点击 **Run Agent**。
+访问 <http://localhost:5173>。**首次使用先注册一个账号**（右上角头像 → Sign in →
+Create account），然后输股票代码（如 `NVDA`），点击 **Run Agent**。
+
+> 游客可以不登录查看行情（价格、K 线、指标），但跑分析需要登录 ——
+> 因为每次分析结果都会按用户存进数据库。
 
 > 前端默认直连 `http://localhost:8000`（见 `src/lib/api.ts` 的 `API_BASE`），两个服务都要保持运行。
 
@@ -124,8 +136,28 @@ OPENAI_API_KEY=sk-...
 | `TRADINGAGENTS_MAX_DEBATE_ROUNDS` | 多空辩论轮数（默认 1，调大更慢更费钱） |
 | `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | Alpaca 模拟盘（只读），读取真实持仓；留空则用合成纸面模型 |
 | `FRED_API_KEY` | 美联储宏观数据（免费申请） |
+| `DATABASE_URL` | 数据库地址；不填则用 `data/agent_console.sqlite3` |
+| `JWT_SECRET` | 登录 token 签名密钥，**生产必须自己生成** |
+| `JWT_EXPIRE_MINUTES` | 登录有效期（分钟），默认 10080 即 7 天 |
 
 > 所有 `TRADINGAGENTS_*` 变量都会覆盖 `tradingagents/default_config.py` 中的同名配置，无需改代码。
+
+### 数据库：默认 SQLite，可一行切 MySQL
+
+不配置 `DATABASE_URL` 时用 SQLite，**零安装、开箱即用**，表在启动时自动创建。
+要换成 MySQL，只改这一行环境变量，代码不用动：
+
+```bash
+pip install PyMySQL cryptography
+```
+
+```bash
+# TradingAgents-main/.env
+DATABASE_URL=mysql+pymysql://user:pass@127.0.0.1:3306/tradingagents?charset=utf8mb4
+```
+
+> 表结构刻意用了 SQLAlchemy 的通用 `JSON` 类型（而非 PostgreSQL 专属的 JSONB），
+> 所以 SQLite / MySQL / PostgreSQL 都能直接建表，dashboard 快照整块存进去。
 
 ---
 
@@ -139,11 +171,13 @@ OPENAI_API_KEY=sk-...
    ↓  GET /run/{id}/events  ←  SSE 长连接，逐条推给浏览器
    ↓  前端 setData → React 重渲染
 界面实时滚动：阶段进度 / 活动日志 / 研究报告 / 最终评级
+   ↓  跑完 → 整份结果（评级 + 决策理由 + dashboard 快照）写入数据库
+刷新页面 / 隔天再来：左侧「Analysis History」可以看到并回看每一次结果
 ```
 
 **6 类 SSE 事件**：`meta`、`stage`、`activity`、`report`、`decision`、`dashboard`。
 
-另外，打开页面时会先调 `GET /dashboard/{ticker}` 拉一份**真实行情**做基线（价格/曲线/RSI/波动率来自 yfinance），AI 跑完后再用真实评级覆盖。
+另外，打开页面时会先调 `GET /dashboard/{ticker}` 拉一份**真实行情**做基线（价格/曲线/RSI/波动率来自 yfinance），AI 跑完后再用真实评级覆盖。如果你登录了且之前分析过这个标的，页面会再自动把**最后一次保存的评级**叠回去 —— 所以刷新之后评级不会丢。
 
 ### 哪些数据是真的
 
@@ -182,3 +216,8 @@ npm run typecheck    # 类型检查
 | 分析很慢（几分钟） | 正常。可调小 `TRADINGAGENTS_MAX_DEBATE_ROUNDS`、换更快的模型 |
 | 界面显示「未评级」 | 正常。尚未运行 Agent，评级要等 AI 跑完才有 |
 | 首次启动报 import 错误 | 确认在 `TradingAgents-main/` 目录下执行，且 `pip install -e .` 已成功 |
+| 点了 Run Agent 弹出登录框 | 正常。跑分析需要登录，结果会存进你自己的历史记录 |
+| 刷新后评级没了 | 未登录时正常（游客不存历史）。登录后会自动恢复上一次结果 |
+| 看别人的历史记录 | 不支持，`/analyses` 按用户强制隔离，非本人返回 404 |
+| 换 MySQL 后启动报驱动错误 | 忘了 `pip install PyMySQL cryptography` |
+| 重启后登录失效 | `JWT_SECRET` 变了（没配时会用开发默认值）。配好固定密钥即可 |

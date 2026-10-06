@@ -4,11 +4,15 @@ import {
   Check,
   ChevronDown,
   Clock,
+  LogIn,
+  LogOut,
   Menu,
   Moon,
   Sun,
+  User as UserIcon,
 } from 'lucide-react'
 import { cn } from '../lib/cn'
+import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
 import { DemoModeBadge } from './DemoModeBadge'
 
@@ -234,15 +238,115 @@ export function TopBar({ onOpenMobileNav, updatedAt, theme, onToggleTheme }: Top
           {theme === 'dark' ? <Sun className="h-[18px] w-[18px]" size={18} /> : <Moon className="h-[18px] w-[18px]" size={18} />}
         </button>
 
-        {/* Avatar */}
-        <button
-          type="button"
-          aria-label={t('topbar.accountMenu')}
-          className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-accent/70 to-ai/70 text-xs font-bold text-app ring-2 ring-line transition-transform hover:scale-105"
-        >
-          AR
-        </button>
+        {/* Account */}
+        <AccountMenu />
       </div>
     </header>
+  )
+}
+
+/** Initials for the avatar — "alice" → "AL", fallback to a person icon. */
+function initialsOf(user: { display_name: string | null; username: string }): string {
+  const source = (user.display_name || user.username || '').trim()
+  if (!source) return ''
+  const parts = source.split(/\s+/).filter(Boolean)
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase()
+  return source.slice(0, 2).toUpperCase()
+}
+
+/**
+ * Avatar + dropdown. Signed out it shows a person glyph and a "Sign in" action;
+ * signed in it shows the user's initials, their name, and a sign-out action.
+ */
+function AccountMenu() {
+  const { t } = useI18n()
+  const { user, logout, openLogin } = useAuth()
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const initials = user ? initialsOf(user) : ''
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={t('topbar.accountMenu')}
+        title={user ? user.username : t('auth.guestTooltip')}
+        className={cn(
+          'flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold ring-2 ring-line transition-transform hover:scale-105',
+          user
+            ? 'bg-gradient-to-br from-accent/70 to-ai/70 text-app'
+            : 'border border-dashed border-line bg-surface-2 text-ink-muted',
+        )}
+      >
+        {user ? initials || <UserIcon size={14} /> : <UserIcon size={14} />}
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 z-40 mt-2 w-52 animate-fade-in overflow-hidden rounded-lg border border-line bg-surface-2 p-1 shadow-card"
+        >
+          {user ? (
+            <>
+              <div className="border-b border-line/60 px-3 py-2">
+                <p className="truncate text-xs font-semibold text-ink">
+                  {user.display_name || user.username}
+                </p>
+                <p className="truncate text-[11px] text-ink-muted">@{user.username}</p>
+              </div>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  logout()
+                  setOpen(false)
+                }}
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs text-ink-secondary transition-colors hover:bg-white/5 hover:text-ink"
+              >
+                <LogOut size={13} />
+                {t('auth.signOut')}
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="border-b border-line/60 px-3 py-2">
+                <p className="text-xs font-semibold text-ink">{t('auth.guest')}</p>
+                <p className="text-[11px] text-ink-muted">{t('auth.requiresLogin')}</p>
+              </div>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  openLogin()
+                  setOpen(false)
+                }}
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs text-ink-secondary transition-colors hover:bg-white/5 hover:text-ink"
+              >
+                <LogIn size={13} />
+                {t('auth.signIn')}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
   )
 }

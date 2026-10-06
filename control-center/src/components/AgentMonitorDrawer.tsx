@@ -216,7 +216,7 @@ const STAGE_KEY: Record<string, string> = {
   execute: 'stage.execute',
 }
 
-function StagePipeline({ stages }: { stages: PipelineStage[] }) {
+export function StagePipeline({ stages }: { stages: PipelineStage[] }) {
   const { t } = useI18n()
   return (
     <div className="rounded-xl border border-line bg-surface p-4">
@@ -268,7 +268,7 @@ function StagePipeline({ stages }: { stages: PipelineStage[] }) {
   )
 }
 
-function Section({
+export function Section({
   id,
   title,
   icon: Icon,
@@ -303,7 +303,7 @@ function Section({
   )
 }
 
-function FeatureTag({ tag }: { tag: 'bullish' | 'bearish' | 'neutral' }) {
+export function FeatureTag({ tag }: { tag: 'bullish' | 'bearish' | 'neutral' }) {
   const { t } = useI18n()
   const map = {
     bullish: 'text-positive',
@@ -313,13 +313,13 @@ function FeatureTag({ tag }: { tag: 'bullish' | 'bearish' | 'neutral' }) {
   return <span className={cn('text-[10px] font-semibold', map[tag])}>{t(`featureTag.${tag}`)}</span>
 }
 
-function Direction({ dir }: { dir: 'up' | 'down' | 'flat' }) {
+export function Direction({ dir }: { dir: 'up' | 'down' | 'flat' }) {
   if (dir === 'up') return <span className="text-positive">▲</span>
   if (dir === 'down') return <span className="text-negative">▼</span>
   return <span className="text-ink-muted">—</span>
 }
 
-function CandidateRow({ signal }: { signal: Signal }) {
+export function CandidateRow({ signal }: { signal: Signal }) {
   const { t } = useI18n()
   return (
     <li className="flex items-center justify-between rounded-lg border border-line bg-surface-2/60 px-2.5 py-2">
@@ -337,7 +337,7 @@ function CandidateRow({ signal }: { signal: Signal }) {
   )
 }
 
-function RiskCheckRow({ check }: { check: RiskCheckItem }) {
+export function RiskCheckRow({ check }: { check: RiskCheckItem }) {
   const { t } = useI18n()
   const map = {
     pass: { text: 'text-positive', labelKey: 'monitor.pass' },

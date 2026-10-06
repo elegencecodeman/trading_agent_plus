@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { API_BASE, fetchDashboard } from './api'
+import { API_BASE, fetchDashboard, fetchLatestAnalysis, getAuthToken, notifyUnauthorized } from './api'
 import { useI18n } from './i18n'
 import type {
   ActivityEntry,
@@ -217,6 +217,12 @@ export function useAgentRun(): LiveRun {
   const [warning, setWarning] = useState<string | null>(null)
   const esRef = useRef<EventSource | null>(null)
   const failedRef = useRef(false)
+  /**
+   * Bumped on every reset / start. An in-flight "restore my last analysis"
+   * fetch only applies its payload if the epoch still matches, so a slow
+   * response cannot overwrite a newer ticker or a run that just began.
+   */
+  const epochRef = useRef(0)
 
   useEffect(() => () => { esRef.current?.close() }, [])
 
@@ -224,15 +230,20 @@ export function useAgentRun(): LiveRun {
     esRef.current?.close()
     esRef.current = null
     failedRef.current = false
+    epochRef.current += 1
     setPhase('running')
     setConnected(false)
     setLive(false)
     setError(null)
     setWarning(null)
 
+    const token = getAuthToken()
     fetch(`${API_BASE}/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify({
         ticker: config.ticker,
         trade_date: today(),
@@ -244,6 +255,14 @@ export function useAgentRun(): LiveRun {
       }),
     })
       .then(async (res) => {
+        if (res.status === 401) {
+          // The token is gone or expired. Reset the session so the login dialog
+          // opens, and stop the run instead of showing a bare "HTTP 401".
+          notifyUnauthorized()
+          setError(t('error.signInRequired'))
+          setPhase('stopped')
+          return
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const body = (await res.json()) as { run_id: string; events_url: string }
         const es = new EventSource(API_BASE + body.events_url)
@@ -333,6 +352,8 @@ export function useAgentRun(): LiveRun {
     esRef.current?.close()
     esRef.current = null
     failedRef.current = false
+    epochRef.current += 1
+    const epoch = epochRef.current
     setData(idleDashboard(ticker, range, t))
     setPhase('idle')
     setConnected(false)
@@ -343,6 +364,7 @@ export function useAgentRun(): LiveRun {
 
     fetchDashboard(ticker, range)
       .then((dash) => {
+        if (epochRef.current !== epoch) return
         if (!dash.available) {
           setLive(false)
           setLoading(false)
@@ -352,8 +374,26 @@ export function useAgentRun(): LiveRun {
         setLive(true)
         setLoading(false)
         setData((d) => applyDashboard(d, dash))
+
+        // The idle /dashboard is deliberately `rated: false` — real prices but
+        // no agent call. If this account has analysed the ticker before, fold
+        // the stored dashboard back in on top so the last rating survives a
+        // page reload instead of vanishing. Guests and first-timers just keep
+        // the unrated baseline.
+        if (!getAuthToken()) return
+        fetchLatestAnalysis(ticker)
+          .then((last) => {
+            if (epochRef.current !== epoch || !last?.dashboard) return
+            setLive(true)
+            setData((d) => applyDashboard(d, last.dashboard as DashboardResponse))
+            setWarning(t('error.restoringLast', { ticker }))
+          })
+          .catch(() => {
+            /* history is a nicety — the live dashboard already rendered */
+          })
       })
       .catch((err: unknown) => {
+        if (epochRef.current !== epoch) return
         setLive(false)
         setLoading(false)
         setError(t('error.connectBackend', { base: API_BASE, detail: err instanceof Error ? err.message : String(err) }))

@@ -63,12 +63,22 @@ export function sideTone(side: Side): BadgeTone {
   return side === 'BUY' ? 'positive' : side === 'SELL' ? 'negative' : 'neutral'
 }
 
+// UNRATED gets a dash: no direction yet reads as "no call", not "flat".
+const SIDE_ICONS: Record<Side, LucideIcon> = {
+  BUY: ArrowUpRight,
+  SELL: ArrowDownRight,
+  HOLD: ArrowRight,
+  UNRATED: Minus,
+}
+
+/** The icon *component* for a side — for APIs like ``StatusBadge`` that take one. */
+export function sideIcon(side: Side): LucideIcon {
+  return SIDE_ICONS[side] ?? ArrowRight
+}
+
 export function SideIcon({ side, className }: { side: Side; className?: string }) {
-  if (side === 'BUY') return <ArrowUpRight className={className ?? 'h-3 w-3'} size={12} />
-  if (side === 'SELL') return <ArrowDownRight className={className ?? 'h-3 w-3'} size={12} />
-  // UNRATED: no direction yet — a dash reads as "no call" rather than "flat".
-  if (side === 'UNRATED') return <Minus className={className ?? 'h-3 w-3'} size={12} />
-  return <ArrowRight className={className ?? 'h-3 w-3'} size={12} />
+  const Icon = sideIcon(side)
+  return <Icon className={className ?? 'h-3 w-3'} size={12} />
 }
 
 export function signalStatusTone(status: SignalStatus): BadgeTone {
