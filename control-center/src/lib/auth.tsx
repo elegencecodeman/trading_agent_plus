@@ -96,6 +96,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   const logout = useCallback(() => {
+    // Revoke server-side. Fire-and-forget on purpose: signing out locally must
+    // never depend on the network, and if this call fails the token merely
+    // stays valid until it expires — exactly the old behaviour, not a broken
+    // sign-out. Called before the token is dropped so the request carries it.
+    void api.logout().catch(() => {})
     setAuthToken(null)
     setUser(null)
   }, [])

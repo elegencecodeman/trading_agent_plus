@@ -8,17 +8,24 @@ Design notes
   on hash and verify — otherwise a long password would authenticate against a
   shorter prefix.
 
-* **Tokens** are stateless HS256 JWTs signed with ``JWT_SECRET``. There is no
-  server-side session table, so logout is purely client-side (drop the token).
-  The trade-off is that a leaked token stays valid until it expires — keep
-  ``JWT_EXPIRE_MINUTES`` modest and rotate ``JWT_SECRET`` to force a global
-  sign-out.
+* **Tokens** are stateless HS256 JWTs signed with ``JWT_SECRET`` — there is no
+  server-side session table. Logout is therefore normally client-side (drop the
+  token), which leaves a leaked token valid until it expires.
+
+* **Revocation** closes that gap: every token carries a ``jti`` claim, and
+  ``POST /auth/logout`` puts that ``jti`` on a Redis denylist for the remainder
+  of the token's life. ``current_user`` / ``optional_user`` check the denylist
+  on every authenticated request. The check **fails open** — if Redis is down a
+  revoked token is accepted again rather than every request 401-ing. Keep
+  ``JWT_EXPIRE_MINUTES`` modest and rotate ``JWT_SECRET`` for a global sign-out;
+  neither needs Redis.
 
 * **Guards**: ``current_user`` requires a valid token (401 otherwise);
   ``optional_user`` returns ``None`` for anonymous callers, which is what lets a
   guest browse market data while analysis runs stay login-only.
 
-Env vars (see ``.env.example``): ``JWT_SECRET``, ``JWT_EXPIRE_MINUTES``.
+Env vars (see ``.env.example``): ``JWT_SECRET``, ``JWT_EXPIRE_MINUTES``,
+``REDIS_URL`` (revocation only).
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from server import cache
 from server.db import get_db
 from server.models import User
 
@@ -118,19 +126,47 @@ def decode_token(token: str) -> dict[str, Any] | None:
 # --------------------------------------------------------------------------- #
 # FastAPI guards
 # --------------------------------------------------------------------------- #
-def _user_from_credentials(
-    creds: HTTPAuthorizationCredentials | None, db: Session
-) -> User | None:
+def _payload_from_credentials(
+    creds: HTTPAuthorizationCredentials | None,
+) -> dict[str, Any] | None:
+    """Verified token payload, or ``None`` when absent/invalid/revoked."""
     if creds is None or not creds.credentials:
         return None
     payload = decode_token(creds.credentials)
     if not payload:
+        return None
+    if cache.is_revoked(payload.get("jti")):
+        return None
+    return payload
+
+
+def _user_from_credentials(
+    creds: HTTPAuthorizationCredentials | None, db: Session
+) -> User | None:
+    payload = _payload_from_credentials(creds)
+    if payload is None:
         return None
     try:
         user_id = int(payload.get("sub", ""))
     except (TypeError, ValueError):
         return None
     return db.get(User, user_id)
+
+
+def revoke_token(payload: dict[str, Any]) -> bool:
+    """Denylist the token's ``jti`` until its own ``exp``. See ``server.cache``.
+
+    Returns False when the token could not be revoked — either it has no ``jti``
+    (i.e. it predates the claim) or Redis is unreachable. Either way the caller
+    still gets a successful logout: the client dropping the token is the whole
+    mechanism the rest of the system relies on, and revocation is the upgrade.
+    """
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not jti or not isinstance(exp, (int, float)):
+        return False
+    remaining = int(exp - datetime.now(timezone.utc).timestamp())
+    return cache.revoke(str(jti), remaining)
 
 
 def current_user(
@@ -146,6 +182,24 @@ def current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+
+def current_payload(
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> dict[str, Any]:
+    """The caller's verified token payload — 401 when missing/invalid/revoked.
+
+    Used by logout, which needs the ``jti``/``exp`` claims rather than the user
+    row (and so skips the database lookup ``current_user`` does).
+    """
+    payload = _payload_from_credentials(creds)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return payload
 
 
 def optional_user(

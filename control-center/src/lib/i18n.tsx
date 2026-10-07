@@ -300,6 +300,7 @@ const en: Dict = {
     fetchMarketShort: 'Unable to fetch real market data',
     backendUnavailable: 'Backend market data unavailable ({detail}) — cards keep their current values.',
     signInRequired: 'Your session expired — sign in again to run an analysis.',
+    rateLimited: 'Analysis limit reached — try again later.',
     restoringLast: 'Showing your last saved analysis for {ticker}.',
   },
   comingsoon: {
@@ -628,6 +629,7 @@ const zh: Dict = {
     fetchMarketShort: '无法获取真实行情',
     backendUnavailable: '后端行情不可用（{detail}）— 数值卡片保持当前值。',
     signInRequired: '登录状态已过期 — 请重新登录后再运行分析。',
+    rateLimited: '已达到分析次数上限 — 请稍后再试。',
     restoringLast: '正在显示 {ticker} 上一次保存的分析结果。',
   },
   comingsoon: {

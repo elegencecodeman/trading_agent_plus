@@ -3,11 +3,37 @@ services:
     build: .
     env_file:
       - .env
+    environment:
+      # Overrides whatever .env says: inside the compose network Redis is a
+      # sibling service, not localhost. Remove either line to run without it —
+      # server/cache.py fails open on an unreachable Redis.
+      - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./data:/home/appuser/.tradingagents
       - ./reports:/home/appuser/app/reports
+    depends_on:
+      - redis
     tty: true
     stdin_open: true
+
+  # Optional acceleration: response cache, per-user run rate limit, and the JWT
+  # revocation denylist (server/cache.py). Without it everything still works.
+  #
+  # AOF persistence is on because the denylist lives here: a Redis restart with
+  # no AOF would silently un-revoke tokens that were signed out, and would reset
+  # the run counters. For a pure cache it would not matter.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    ports:
+      # Loopback only — the cache holds analysis data, not credentials, but
+      # there is no reason to expose it to the LAN. Comment this out to talk to
+      # this instance from a server running on the host; a container on the
+      # compose network reaches it as `redis:6379` either way.
+      - "127.0.0.1:6379:6379"
 
   ollama:
     image: ollama/ollama:latest
@@ -34,3 +60,4 @@ services:
 
 volumes:
   ollama_data:
+  redis_data:

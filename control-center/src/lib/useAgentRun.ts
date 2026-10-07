@@ -263,6 +263,15 @@ export function useAgentRun(): LiveRun {
           setPhase('stopped')
           return
         }
+        if (res.status === 429) {
+          // Not a failure — a quota. The server's message says how long to
+          // wait, which is more useful than the "unable to reach backend"
+          // wording the generic catch below would produce.
+          const body = (await res.json().catch(() => null)) as { detail?: string } | null
+          setError(body?.detail ?? t('error.rateLimited'))
+          setPhase('stopped')
+          return
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const body = (await res.json()) as { run_id: string; events_url: string }
         const es = new EventSource(API_BASE + body.events_url)

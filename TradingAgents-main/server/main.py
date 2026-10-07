@@ -34,13 +34,13 @@ from dotenv import load_dotenv
 # .env has to be in os.environ first.
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from fastapi import Depends, FastAPI, HTTPException  # noqa: E402
+from fastapi import Depends, FastAPI, HTTPException, Response, status  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import StreamingResponse  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
-from server import auth, db, options, store  # noqa: E402
+from server import auth, cache, db, options, store  # noqa: E402
 from server.models import AnalysisRun, User, utcnow  # noqa: E402
 from server.runner import StreamingRunner  # noqa: E402
 from server.schemas import (  # noqa: E402
@@ -63,13 +63,26 @@ logger = logging.getLogger("server.main")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Create tables on boot. A DB failure must not stop the server — market
-    data endpoints keep working without persistence, so we log and carry on."""
+    """Create tables on boot. Neither a DB nor a Redis failure may stop the
+    server — market data endpoints keep working without persistence, and every
+    Redis-backed feature (cache, rate limit, revocation) fails open."""
     try:
         db.init_db()
         logger.info("persistence ready: %s", db.database_url())
     except Exception:  # noqa: BLE001 — degrade, never refuse to boot
         logger.exception("could not initialise the database; persistence disabled")
+
+    redis_state = cache.status()
+    if not redis_state.get("enabled"):
+        logger.info("redis disabled; cache / rate limits / revocation are off")
+    elif redis_state.get("reachable"):
+        logger.info("redis ready: %s", redis_state.get("url"))
+    else:
+        logger.warning(
+            "redis configured but unreachable at %s; starting without "
+            "cache/rate-limits/token-revocation",
+            redis_state.get("url"),
+        )
     yield
 
 
@@ -120,8 +133,11 @@ RUNS: dict[str, dict[str, Any]] = {}
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, Any]:
+    """Liveness plus the optional-dependency state. ``status`` stays "ok" even
+    when Redis is down — that endpoint answers "is the API serving", and Redis
+    is an accelerator, not a dependency."""
+    return {"status": "ok", "redis": cache.status()}
 
 
 @app.get("/options")
@@ -132,13 +148,29 @@ def get_options() -> dict[str, Any]:
 
 @app.get("/quote/{ticker}")
 def quote(ticker: str) -> dict[str, Any]:
-    """Live price + key indicators preview (real yfinance data, no LLM)."""
+    """Live price + key indicators preview (real yfinance data, no LLM).
+
+    Cached for ``QUOTE_CACHE_SECONDS`` — this is polled while the user types a
+    ticker and every poll would otherwise be a Yahoo round trip (and a step
+    closer to their rate limit; see ``market._retry_history``).
+    """
+    cache_key = f"quote:{ticker.upper()}"
+    cached = cache.cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     asset_type = options.detect_asset_type(ticker)
     try:
         from server import market  # local import: pandas+yfinance are heavy
-        return market.MarketBridge(ticker, asset_type).snapshot()
+        payload = market.MarketBridge(ticker, asset_type).snapshot()
     except Exception as exc:  # noqa: BLE001 — network/ticker failures degrade gracefully
         return {"available": False, "ticker": ticker, "error": f"{type(exc).__name__}: {exc}"}
+
+    # Only successful payloads are cached: storing a transient Yahoo failure
+    # would pin that error on the ticker for the whole TTL.
+    if payload.get("available"):
+        cache.cache_set(cache_key, payload, cache.ttl_quote_seconds())
+    return payload
 
 
 # Frontend range selector → yfinance history period (auto interval per period).
@@ -157,9 +189,18 @@ def dashboard(ticker: str, range: str = "3M") -> dict[str, Any]:
     """
     asset_type = options.detect_asset_type(ticker)
     period = _RANGE_TO_PERIOD.get(range, "6mo")
+
+    # The unrated baseline is a pure function of (ticker, asset_type, period),
+    # so it caches cleanly. The *rated* dashboard an agent produces comes from
+    # the run itself and from /analyses/latest — never from here.
+    cache_key = f"dashboard:{asset_type}:{ticker.upper()}:{period}"
+    cached = cache.cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     try:
         from server import market  # local import: pandas+yfinance are heavy
-        return market.build_dashboard(
+        payload = market.build_dashboard(
             ticker,
             None,  # unrated — the agent has not analysed this ticker yet
             "",
@@ -168,6 +209,10 @@ def dashboard(ticker: str, range: str = "3M") -> dict[str, Any]:
         )
     except Exception as exc:  # noqa: BLE001 — network/ticker failures degrade gracefully
         return {"available": False, "ticker": ticker, "error": f"{type(exc).__name__}: {exc}"}
+
+    if payload.get("available"):
+        cache.cache_set(cache_key, payload, cache.ttl_dashboard_seconds())
+    return payload
 
 
 # --------------------------------------------------------------------------- #
@@ -222,6 +267,17 @@ def login(req: LoginRequest, db_session: Session = Depends(db.get_db)) -> TokenR
 def me(user: User = Depends(auth.current_user)) -> UserOut:
     """Who am I — used by the SPA to validate a stored token on page load."""
     return _user_out(user)
+
+
+@app.post("/auth/logout")
+def logout(payload: dict[str, Any] = Depends(auth.current_payload)) -> dict[str, Any]:
+    """Sign out server-side by denylisting this token's ``jti``.
+
+    Always succeeds from the caller's point of view — the client drops the token
+    either way, and a missing Redis (``revoked: false``) only means the token
+    keeps working until its natural expiry, which is the pre-existing behaviour.
+    """
+    return {"ok": True, "revoked": auth.revoke_token(payload)}
 
 
 # --------------------------------------------------------------------------- #
@@ -348,9 +404,36 @@ def _persist_run(
 
 
 @app.post("/run", response_model=RunResponse)
-def start_run(req: RunRequest, user: User = Depends(auth.current_user)) -> RunResponse:
+def start_run(
+    req: RunRequest,
+    response: Response,
+    user: User = Depends(auth.current_user),
+) -> RunResponse:
     """Start an analysis. **Requires a token** — a run is billed to an account
-    and its result is persisted under that account."""
+    and its result is persisted under that account.
+
+    Rate limited per user (``RUN_RATE_LIMIT`` per ``RUN_RATE_WINDOW_SECONDS``):
+    every run burns real LLM credits, so one account cannot loop the endpoint.
+    The limit fails open when Redis is unavailable.
+    """
+    limit, window = cache.run_rate_limit()
+    allowed, remaining, retry_after = cache.rate_limit(f"run:{user.id}", limit, window)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Analysis limit reached — at most {limit} runs per "
+                f"{window // 60} minutes. Try again in "
+                f"{max(1, retry_after // 60)} minute(s)."
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    # Let the client show the remaining quota instead of discovering it via 429.
+    response.headers["X-RateLimit-Limit"] = str(limit)
+    response.headers["X-RateLimit-Remaining"] = str(remaining)
+    response.headers["X-RateLimit-Reset"] = str(retry_after)
+
     run_id = uuid.uuid4().hex[:12]
     q: Queue[tuple[str, dict[str, Any]]] = Queue()
     RUNS[run_id] = {"queue": q, "status": "running", "user_id": user.id}

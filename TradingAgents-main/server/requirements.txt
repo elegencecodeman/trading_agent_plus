@@ -17,3 +17,8 @@ bcrypt>=4.1.0
 # Only required when DATABASE_URL uses mysql+pymysql://
 # PyMySQL>=1.1.0
 # cryptography>=42.0.0   # PyMySQL needs it for MySQL 8's caching_sha2_password
+# --- optional acceleration (server/cache.py) ---
+# Response cache, per-user run rate limit, JWT revocation. Optional in the
+# strict sense: with Redis absent the server logs a warning and fails open.
+# Set REDIS_URL=none to skip it deliberately.
+redis>=6.2.0

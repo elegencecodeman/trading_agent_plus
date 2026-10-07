@@ -86,10 +86,16 @@ interface RequestOptions {
   body?: unknown
   /** Attach the bearer token. Defaults to true for everything but login/register. */
   auth?: boolean
+  /**
+   * Don't run the global 401 recovery for this request. Set it where a 401 is
+   * an expected outcome rather than a dead session — signing out with an
+   * already-expired token would otherwise pop the login dialog at the user.
+   */
+  quiet401?: boolean
 }
 
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, auth = true } = opts
+  const { method = 'GET', body, auth = true, quiet401 = false } = opts
   const headers: Record<string, string> = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   const token = getAuthToken()
@@ -116,7 +122,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     } catch {
       /* non-JSON error body — keep the status text */
     }
-    if (res.status === 401 && auth) notifyUnauthorized()
+    if (res.status === 401 && auth && !quiet401) notifyUnauthorized()
     throw new ApiError(res.status, detail)
   }
 
@@ -173,6 +179,24 @@ export function login(username: string, password: string): Promise<TokenResponse
 /** Validate the stored token and return the current user. */
 export function fetchMe(): Promise<AuthUser> {
   return request<AuthUser>('/auth/me')
+}
+
+/**
+ * Sign out server-side: the token's ``jti`` goes on a Redis denylist for the
+ * rest of its life, so a copy of the token stops working immediately instead
+ * of at expiry. ``revoked: false`` means Redis was unavailable and the token
+ * will simply live out its normal lifetime.
+ *
+ * Must run *before* ``setAuthToken(null)`` — ``request`` reads the token
+ * synchronously when it is called, so the header is captured either way, but
+ * the ordering keeps that dependency visible.
+ */
+export function logout(): Promise<{ ok: boolean; revoked: boolean }> {
+  return request<{ ok: boolean; revoked: boolean }>('/auth/logout', {
+    method: 'POST',
+    // An expired token 401s here; that is not a dead session to recover from.
+    quiet401: true,
+  })
 }
 
 /* ------------------------------------------------------------------ *

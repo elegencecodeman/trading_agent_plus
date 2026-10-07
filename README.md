@@ -32,8 +32,10 @@
 | **前端** | React 18 + TypeScript + Vite | 深色控制台界面 |
 | **图表 / UI** | Recharts + Tailwind + lucide-react | |
 | **并发** | `threading` + `queue.Queue` | AI 跑后台线程，事件经队列推给前端 |
+| **账号 / 历史** | SQLAlchemy + SQLite（可换 MySQL） | 注册登录、每次分析结果按用户落库 |
+| **缓存 / 限流** | Redis（可选） | 行情缓存、按账号限流、Token 吊销 |
 
-**关键点**：项目**没有引入 Redis / 数据库 / Nginx** 等外部中间件，全部用 Python 标准库实现，开箱即跑。
+**关键点**：账号体系和 Redis 都是**可选的**——不装 SQLite 数据库也能跑行情接口，不装 Redis 也能跑全流程（服务只打一条 warning，缓存/限流/吊销全部降级放行）。Nginx 依然没有引入，开箱即跑。
 
 ---
 
@@ -139,6 +141,9 @@ OPENAI_API_KEY=sk-...
 | `DATABASE_URL` | 数据库地址；不填则用 `data/agent_console.sqlite3` |
 | `JWT_SECRET` | 登录 token 签名密钥，**生产必须自己生成** |
 | `JWT_EXPIRE_MINUTES` | 登录有效期（分钟），默认 10080 即 7 天 |
+| `REDIS_URL` | Redis 地址，默认 `redis://127.0.0.1:6379/0`；写 `none` 可彻底关掉 |
+| `QUOTE_CACHE_SECONDS` / `DASHBOARD_CACHE_SECONDS` | 行情缓存秒数，默认 30 / 60 |
+| `RUN_RATE_LIMIT` / `RUN_RATE_WINDOW_SECONDS` | 每个账号的跑分析配额，默认 10 次 / 3600 秒 |
 
 > 所有 `TRADINGAGENTS_*` 变量都会覆盖 `tradingagents/default_config.py` 中的同名配置，无需改代码。
 
@@ -159,7 +164,27 @@ DATABASE_URL=mysql+pymysql://user:pass@127.0.0.1:3306/tradingagents?charset=utf8
 > 表结构刻意用了 SQLAlchemy 的通用 `JSON` 类型（而非 PostgreSQL 专属的 JSONB），
 > 所以 SQLite / MySQL / PostgreSQL 都能直接建表，dashboard 快照整块存进去。
 
----
+### Redis：可选的加速层
+
+**不装也能跑。** 起一个（Docker 一条命令）：
+
+```bash
+docker run -d --name tradingagents-redis --restart unless-stopped \
+  -p 127.0.0.1:6379:6379 redis:7-alpine
+```
+
+它承担三件事，全部定义在 [TradingAgents-main/server/cache.py](TradingAgents-main/server/cache.py)：
+
+| 用途 | 键 | 说明 |
+| --- | --- | --- |
+| 行情缓存 | `ta:quote:*` / `ta:dashboard:*` | `/quote` 30 秒、`/dashboard` 60 秒。前端反复轮询同一个 ticker 时不再重复打 Yahoo（Yahoo 有速率限制），**只缓存成功结果**——失败不会被钉住整个 TTL |
+| 按账号限流 | `ta:rl:run:{user_id}:{窗口序号}` | 每个账号每小时最多 10 次 `/run`，超出返回 429 + `Retry-After`。每次分析都在烧 LLM 额度，不能让人循环刷 |
+| Token 吊销 | `ta:revoked:{jti}` | `POST /auth/logout` 把该 token 的 `jti` 拉黑到它自然过期为止，被盗的 token 立刻失效而不是等到 7 天后 |
+
+**全部 fail-open**：Redis 连不上时缓存当 miss、限流放行、吊销名单视为空，服务照常跑，只在启动时打一条 warning。代价是 Redis 挂掉期间被吊销的 token 会重新可用——对一个只做「提前作废」的名单来说可以接受。连不上后会进熔断退避（15 秒起翻倍，上限 120 秒），不会让每个请求都去等一次连接超时。
+
+> 想彻底关掉：`REDIS_URL=none`。`/health` 会返回 `{"status":"ok","redis":{...}}`，
+> `status` 始终是 `ok`——Redis 是加速器不是依赖，它挂了服务并没有挂。
 
 ## 六、数据是怎么流的
 
